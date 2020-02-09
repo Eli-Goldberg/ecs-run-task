@@ -70,5 +70,5 @@ We're using Go 1.11 with [modules](https://github.com/golang/go/wiki/Modules).
 
 ```bash
 export GO111MODULE=on
-go get -u github.com/eli-goldberg/ecs-run
+go get -u github.com/eli-goldberg/ecs-run-task
 ```

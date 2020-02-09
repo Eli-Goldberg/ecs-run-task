@@ -15,7 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go/service/ecs"
-	"github.com/eli-goldberg/ecs-run/parser"
+	"github.com/eli-goldberg/ecs-run-task/parser"
 )
 
 // Override ..
