@@ -7,7 +7,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/buildkite/ecs-run-task/runner"
+	"github.com/eli-goldberg/ecs-run/runner"
 	"github.com/urfave/cli"
 )
 
