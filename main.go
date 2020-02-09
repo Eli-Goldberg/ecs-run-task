@@ -17,9 +17,9 @@ var (
 
 func main() {
 	app := cli.NewApp()
-	app.Name = "ecs-run-task"
+	app.Name = "ecs-run"
 	app.Usage = "run a once-off task on ECS and tail the output from cloudwatch"
-	app.UsageText = "ecs-run-task [options] [command override]"
+	app.UsageText = "ecs-run [options] [command override]"
 	app.Version = Version
 
 	app.Flags = []cli.Flag{
@@ -77,7 +77,7 @@ func main() {
 		},
 		cli.StringFlag{
 			Name:  "region, r",
-			Usage: "Reion",
+			Usage: "AWS Region",
 		},
 		cli.BoolFlag{
 			Name:  "deregister",

@@ -1,4 +1,4 @@
-# ecs-run-task
+# ecs-run
 
 Runs a once-off ECS task and streams the output via Cloudwatch Logs.
 
@@ -6,10 +6,10 @@ Runs a once-off ECS task and streams the output via Cloudwatch Logs.
 
 ```
 NAME:
-   ecs-run-task - run a once-off task on ECS and tail the output from cloudwatch
+   ecs-run - run a once-off task on ECS and tail the output from cloudwatch
 
 USAGE:
-   ecs-run-task [options] [command override]
+   ecs-run [options] [command override]
 
 COMMANDS:
      help, h  Shows a list of commands or help for one command
@@ -35,7 +35,7 @@ GLOBAL OPTIONS:
 ### Example
 
 ```bash
-$ aws-vault exec myprofile -- ecs-run-task --file examples/helloworld/taskdefinition.json echo "Hello from Docker!"
+$ aws-vault exec myprofile -- ecs-run --file examples/helloworld/taskdefinition.json echo "Hello from Docker!"
 
 Hello from Docker!
 ...
@@ -70,5 +70,5 @@ We're using Go 1.11 with [modules](https://github.com/golang/go/wiki/Modules).
 
 ```bash
 export GO111MODULE=on
-go get -u github.com/buildkite/ecs-run-task
+go get -u github.com/eli-goldberg/ecs-run
 ```

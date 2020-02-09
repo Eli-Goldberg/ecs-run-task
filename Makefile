@@ -2,8 +2,8 @@ VERSION=$(shell git describe --tags --candidates=1 --dirty 2>/dev/null || echo "
 FLAGS=-s -w -X main.Version=$(VERSION)
 SRC=$(shell find . -type f -name '*.go' -not -path "./vendor/*")
 
-ecs-run-task: $(SRC)
-	go build -o ecs-run-task -ldflags="$(FLAGS)" -v .
+ecs-run: $(SRC)
+	go build -o ecs-run -ldflags="$(FLAGS)" -v .
 
 .PHONY: test
 test:
@@ -13,7 +13,7 @@ test:
 
 .PHONY: clean
 clean:
-	rm -f ecs-run-task
+	rm -f ecs-run
 
 .PHONY: release
 release:
