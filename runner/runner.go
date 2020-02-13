@@ -28,6 +28,7 @@ type Override struct {
 type Runner struct {
 	Service            string
 	TaskName           string
+	TaskDefinitionID   string
 	TaskDefinitionFile string
 	Cluster            string
 	LogGroupName       string
@@ -245,6 +246,220 @@ func (r *Runner) Run(ctx context.Context) error {
 		for _, container := range task.Containers {
 			lw := &logWriter{
 				LogGroupName:   r.LogGroupName,
+				LogStreamName:  logStreamName(streamPrefix, container, task),
+				CloudWatchLogs: cwl,
+			}
+			if err := writeContainerFinishedMessage(ctx, lw, task, container); err != nil {
+				return err
+			}
+		}
+	}
+
+	log.Printf("Waiting for logs to finish")
+	wg.Wait()
+
+	// Determine exit code based on the first non-zero exit code
+	for _, task := range output.Tasks {
+		for _, container := range task.Containers {
+			if *container.ExitCode != 0 {
+				return &exitError{
+					fmt.Errorf(
+						"container %s exited with %d",
+						*container.Name,
+						*container.ExitCode,
+					),
+					int(*container.ExitCode),
+				}
+			}
+		}
+	}
+
+	return err
+}
+
+// RunExistingTaskDefinition runs for an existing task definition
+func (r *Runner) RunExistingTaskDefinition(ctx context.Context) error {
+
+	//TODO: stream Prefix and group are hard coded to use only the first container definition
+
+	sess := session.Must(session.NewSession(r.Config.WithRegion(r.Region)))
+	svc := ecs.New(sess)
+
+	resp, err := svc.DescribeTaskDefinition(&ecs.DescribeTaskDefinitionInput{
+		TaskDefinition: &r.TaskDefinitionID,
+	})
+
+	if err != nil {
+		return fmt.Errorf("Couldn't find task definition '%s'", r.TaskDefinitionID)
+	}
+
+	taskDefinition := resp.TaskDefinition
+	streamPrefix := *taskDefinition.Family
+
+	logGroupName := *(taskDefinition.ContainerDefinitions[0]).LogConfiguration.Options["awslogs-group"]
+	streamPrefix = "ecs"
+
+	if streamPrefix == "" {
+		streamPrefix = fmt.Sprintf("run_task_%d", time.Now().Nanosecond())
+	}
+
+	// if err := createLogGroup(sess, *taskDefinition.Family); err != nil {
+	// 	return err
+	// }
+
+	// log.Printf("Setting tasks to use log group %s", logGroupName)
+	// for _, def := range taskDefinition.ContainerDefinitions {
+	// 	def.LogConfiguration = &ecs.LogConfiguration{
+	// 		LogDriver: aws.String("awslogs"),
+	// 		Options: map[string]*string{
+	// 			"awslogs-group":         aws.String(logGroupName),
+	// 			"awslogs-region":        aws.String(r.Region),
+	// 			"awslogs-stream-prefix": aws.String(streamPrefix),
+	// 		},
+	// 	}
+	// }
+
+	runTaskInput := &ecs.RunTaskInput{
+		TaskDefinition: aws.String(r.TaskDefinitionID),
+		Cluster:        aws.String(r.Cluster),
+		Count:          aws.Int64(r.Count),
+		Overrides: &ecs.TaskOverride{
+			ContainerOverrides: []*ecs.ContainerOverride{},
+		},
+	}
+	if r.Fargate {
+		runTaskInput.LaunchType = aws.String("FARGATE")
+	}
+	if len(r.Subnets) > 0 || len(r.SecurityGroups) > 0 {
+		runTaskInput.NetworkConfiguration = &ecs.NetworkConfiguration{
+			AwsvpcConfiguration: &ecs.AwsVpcConfiguration{
+				Subnets:        awsStrings(r.Subnets),
+				AssignPublicIp: aws.String("ENABLED"),
+				SecurityGroups: awsStrings(r.SecurityGroups),
+			},
+		}
+	}
+
+	env, err := awsKeyValuePairForEnv(os.LookupEnv, r.Environment)
+	if err != nil {
+		return err
+	}
+
+	for _, override := range r.Overrides {
+		if len(override.Command) > 0 {
+			cmds := []*string{}
+
+			if override.Service == "" {
+				if len(taskDefinition.ContainerDefinitions) != 1 {
+					return fmt.Errorf("No service provided for override and can't determine default service with %d container definitions", len(taskDefinition.ContainerDefinitions))
+				}
+
+				override.Service = *taskDefinition.ContainerDefinitions[0].Name
+				log.Printf("Assuming override applies to '%s'", override.Service)
+			}
+
+			for _, command := range override.Command {
+				cmds = append(cmds, aws.String(command))
+			}
+
+			runTaskInput.Overrides.ContainerOverrides = append(
+				runTaskInput.Overrides.ContainerOverrides,
+				&ecs.ContainerOverride{
+					Command:     cmds,
+					Name:        aws.String(override.Service),
+					Environment: env,
+				},
+			)
+		}
+	}
+
+	// If no overrides specified, but Environment variables were - should still be overridden
+	if len(r.Overrides) == 0 {
+		runTaskInput.Overrides.ContainerOverrides = append(
+			runTaskInput.Overrides.ContainerOverrides,
+			&ecs.ContainerOverride{
+				Name:        taskDefinition.ContainerDefinitions[0].Name,
+				Environment: env,
+			},
+		)
+	}
+
+	log.Printf("Running task %s", taskDefinition)
+	runResp, err := svc.RunTask(runTaskInput)
+	if err != nil {
+		return fmt.Errorf("Unable to run task: %s", err.Error())
+	}
+
+	cwl := cloudwatchlogs.New(sess)
+	var wg sync.WaitGroup
+
+	// var streamsToWatch []string
+
+	// streamPrefix = *(taskDefinition.ContainerDefinitions[0]).LogConfiguration.Options["awslogs-stream-prefix"]
+	// spawn a log watcher for each container
+	for _, task := range runResp.Tasks {
+		for _, container := range task.Containers {
+			containerID := path.Base(*container.ContainerArn)
+			watcher := &logWatcher{
+				LogGroupName:   logGroupName,
+				LogStreamName:  logStreamName(streamPrefix, container, task),
+				CloudWatchLogs: cwl,
+
+				// watch for the finish message to terminate the logger
+				Printer: func(ev *cloudwatchlogs.FilteredLogEvent) bool {
+					finishedPrefix := fmt.Sprintf(
+						"Container %s exited with",
+						containerID,
+					)
+					if strings.HasPrefix(*ev.Message, finishedPrefix) {
+						log.Printf("Found container finished message for %s: %s",
+							containerID, *ev.Message)
+						return false
+					}
+					fmt.Println(*ev.Message)
+					return true
+				},
+			}
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := watcher.Watch(ctx); err != nil {
+					log.Printf("Log watcher returned error: %v", err)
+				}
+			}()
+		}
+	}
+
+	var taskARNs []*string
+	for _, task := range runResp.Tasks {
+		log.Printf("Waiting until task %s has stopped", *task.TaskArn)
+		taskARNs = append(taskARNs, task.TaskArn)
+	}
+
+	err = svc.WaitUntilTasksStopped(&ecs.DescribeTasksInput{
+		Cluster: aws.String(r.Cluster),
+		Tasks:   taskARNs,
+	})
+	if err != nil {
+		return err
+	}
+
+	log.Printf("All tasks have stopped")
+
+	output, err := svc.DescribeTasks(&ecs.DescribeTasksInput{
+		Cluster: aws.String(r.Cluster),
+		Tasks:   taskARNs,
+	})
+	if err != nil {
+		return err
+	}
+
+	// Get the final state of each task and container and write to cloudwatch logs
+	for _, task := range output.Tasks {
+		for _, container := range task.Containers {
+			lw := &logWriter{
+				LogGroupName:   logGroupName,
 				LogStreamName:  logStreamName(streamPrefix, container, task),
 				CloudWatchLogs: cwl,
 			}

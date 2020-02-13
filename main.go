@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/eli-goldberg/ecs-run-task/runner"
 	"github.com/urfave/cli"
@@ -30,6 +31,10 @@ func main() {
 		cli.StringFlag{
 			Name:  "file, f",
 			Usage: "Task definition file in JSON or YAML",
+		},
+		cli.StringFlag{
+			Name:  "task-definition, d",
+			Usage: "Task definition ID (Instead of file)",
 		},
 		cli.StringFlag{
 			Name:  "name, n",
@@ -86,11 +91,7 @@ func main() {
 	}
 
 	app.Action = func(ctx *cli.Context) error {
-		requireFlagValue(ctx, "file")
-
-		if _, err := os.Stat(ctx.String("file")); err != nil {
-			return cli.NewExitError(err, 1)
-		}
+		requireOneOfFlags(ctx, []string{"file", "task-definition"})
 
 		if !ctx.Bool("debug") {
 			log.SetOutput(ioutil.Discard)
@@ -98,6 +99,7 @@ func main() {
 
 		r := runner.New()
 		r.TaskDefinitionFile = ctx.String("file")
+		r.TaskDefinitionID = ctx.String("task-definition")
 		r.Cluster = ctx.String("cluster")
 		r.TaskName = ctx.String("name")
 		r.LogGroupName = ctx.String("log-group")
@@ -107,6 +109,12 @@ func main() {
 		r.Environment = ctx.StringSlice("env")
 		r.Count = ctx.Int64("count")
 		r.Deregister = ctx.Bool("deregister")
+
+		if r.TaskDefinitionFile != "" {
+			if _, err := os.Stat(ctx.String("file")); err != nil {
+				return cli.NewExitError(err, 1)
+			}
+		}
 
 		if r.Region == "" {
 			r.Region = ctx.String("region")
@@ -125,7 +133,15 @@ func main() {
 			})
 		}
 
-		if err := r.Run(context.Background()); err != nil {
+		var runFunc func(ctx context.Context) error
+
+		if r.TaskDefinitionID != "" {
+			runFunc = r.RunExistingTaskDefinition
+		} else {
+			runFunc = r.Run
+		}
+
+		if err := runFunc(context.Background()); err != nil {
 			if ec, ok := err.(cli.ExitCoder); ok {
 				return ec
 			}
@@ -142,9 +158,17 @@ func main() {
 	}
 }
 
-func requireFlagValue(ctx *cli.Context, name string) {
-	if ctx.String(name) == "" {
-		fmt.Fprintf(os.Stderr, "ERROR: Required flag %q isn't set\n\n", name)
+func requireOneOfFlags(ctx *cli.Context, requiredFlags []string) {
+	found := false
+	for _, flag := range requiredFlags {
+		if ctx.String(flag) != "" {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		fmt.Fprintf(os.Stderr, "ERROR: One of the following flags must be set: %q isn't set\n\n", strings.Join(requiredFlags, ","))
 		cli.ShowAppHelpAndExit(ctx, 1)
 	}
 }
