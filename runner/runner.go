@@ -43,10 +43,20 @@ type Runner struct {
 	Deregister         bool
 }
 
+const (
+	awslogsDriver       = "awslogs"
+	awslogsGroup        = "awslogs-group"
+	awslogsRegion       = "awslogs-region"
+	awslogsStreamPrefix = "awslogs-stream-prefix"
+	awsRegion           = "AWS_REGION"
+	fargate             = "FARGATE"
+	enabled             = "ENABLED"
+)
+
 // New creates a new instance of a runner
 func New() *Runner {
 	return &Runner{
-		Region: os.Getenv("AWS_REGION"),
+		Region: os.Getenv(awsRegion),
 		Config: aws.NewConfig(),
 	}
 }
@@ -71,13 +81,13 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	log.Printf("Setting tasks to use log group %s", r.LogGroupName)
 	for _, def := range taskDefinitionInput.ContainerDefinitions {
+		logOptions := make(map[string]*string)
+		logOptions[awslogsGroup] = aws.String(r.LogGroupName)
+		logOptions[awslogsRegion] = aws.String(r.Region)
+		logOptions[awslogsStreamPrefix] = aws.String(streamPrefix)
 		def.LogConfiguration = &ecs.LogConfiguration{
-			LogDriver: aws.String("awslogs"),
-			Options: map[string]*string{
-				"awslogs-group":         aws.String(r.LogGroupName),
-				"awslogs-region":        aws.String(r.Region),
-				"awslogs-stream-prefix": aws.String(streamPrefix),
-			},
+			LogDriver: aws.String(awslogsDriver),
+			Options:   logOptions,
 		}
 	}
 
@@ -117,13 +127,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		},
 	}
 	if r.Fargate {
-		runTaskInput.LaunchType = aws.String("FARGATE")
+		runTaskInput.LaunchType = aws.String(fargate)
 	}
 	if len(r.Subnets) > 0 || len(r.SecurityGroups) > 0 {
 		runTaskInput.NetworkConfiguration = &ecs.NetworkConfiguration{
 			AwsvpcConfiguration: &ecs.AwsVpcConfiguration{
 				Subnets:        awsStrings(r.Subnets),
-				AssignPublicIp: aws.String("ENABLED"),
+				AssignPublicIp: aws.String(enabled),
 				SecurityGroups: awsStrings(r.SecurityGroups),
 			},
 		}
@@ -280,8 +290,6 @@ func (r *Runner) Run(ctx context.Context) error {
 // RunExistingTaskDefinition runs for an existing task definition
 func (r *Runner) RunExistingTaskDefinition(ctx context.Context) error {
 
-	//TODO: stream Prefix and group are hard coded to use only the first container definition
-
 	sess := session.Must(session.NewSession(r.Config.WithRegion(r.Region)))
 	svc := ecs.New(sess)
 
@@ -294,30 +302,11 @@ func (r *Runner) RunExistingTaskDefinition(ctx context.Context) error {
 	}
 
 	taskDefinition := resp.TaskDefinition
-	streamPrefix := *taskDefinition.Family
 
-	logGroupName := *(taskDefinition.ContainerDefinitions[0]).LogConfiguration.Options["awslogs-group"]
-	streamPrefix = "ecs"
-
-	if streamPrefix == "" {
-		streamPrefix = fmt.Sprintf("run_task_%d", time.Now().Nanosecond())
+	containerDefinitionMap := make(map[string]*ecs.ContainerDefinition)
+	for _, definition := range taskDefinition.ContainerDefinitions {
+		containerDefinitionMap[*definition.Name] = definition
 	}
-
-	// if err := createLogGroup(sess, *taskDefinition.Family); err != nil {
-	// 	return err
-	// }
-
-	// log.Printf("Setting tasks to use log group %s", logGroupName)
-	// for _, def := range taskDefinition.ContainerDefinitions {
-	// 	def.LogConfiguration = &ecs.LogConfiguration{
-	// 		LogDriver: aws.String("awslogs"),
-	// 		Options: map[string]*string{
-	// 			"awslogs-group":         aws.String(logGroupName),
-	// 			"awslogs-region":        aws.String(r.Region),
-	// 			"awslogs-stream-prefix": aws.String(streamPrefix),
-	// 		},
-	// 	}
-	// }
 
 	runTaskInput := &ecs.RunTaskInput{
 		TaskDefinition: aws.String(r.TaskDefinitionID),
@@ -328,13 +317,13 @@ func (r *Runner) RunExistingTaskDefinition(ctx context.Context) error {
 		},
 	}
 	if r.Fargate {
-		runTaskInput.LaunchType = aws.String("FARGATE")
+		runTaskInput.LaunchType = aws.String(fargate)
 	}
 	if len(r.Subnets) > 0 || len(r.SecurityGroups) > 0 {
 		runTaskInput.NetworkConfiguration = &ecs.NetworkConfiguration{
 			AwsvpcConfiguration: &ecs.AwsVpcConfiguration{
 				Subnets:        awsStrings(r.Subnets),
-				AssignPublicIp: aws.String("ENABLED"),
+				AssignPublicIp: aws.String(enabled),
 				SecurityGroups: awsStrings(r.SecurityGroups),
 			},
 		}
@@ -395,10 +384,13 @@ func (r *Runner) RunExistingTaskDefinition(ctx context.Context) error {
 
 	// var streamsToWatch []string
 
-	// streamPrefix = *(taskDefinition.ContainerDefinitions[0]).LogConfiguration.Options["awslogs-stream-prefix"]
 	// spawn a log watcher for each container
 	for _, task := range runResp.Tasks {
 		for _, container := range task.Containers {
+			containerDefinition := containerDefinitionMap[*container.Name]
+			streamPrefix := *containerDefinition.LogConfiguration.Options[awslogsStreamPrefix]
+			logGroupName := *containerDefinition.LogConfiguration.Options[awslogsGroup]
+
 			containerID := path.Base(*container.ContainerArn)
 			watcher := &logWatcher{
 				LogGroupName:   logGroupName,
@@ -458,6 +450,10 @@ func (r *Runner) RunExistingTaskDefinition(ctx context.Context) error {
 	// Get the final state of each task and container and write to cloudwatch logs
 	for _, task := range output.Tasks {
 		for _, container := range task.Containers {
+			containerDefinition := containerDefinitionMap[*container.Name]
+			streamPrefix := *containerDefinition.LogConfiguration.Options[awslogsStreamPrefix]
+			logGroupName := *containerDefinition.LogConfiguration.Options[awslogsGroup]
+
 			lw := &logWriter{
 				LogGroupName:   logGroupName,
 				LogStreamName:  logStreamName(streamPrefix, container, task),
