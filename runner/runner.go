@@ -308,6 +308,12 @@ func (r *Runner) RunExistingTaskDefinition(ctx context.Context) error {
 		containerDefinitionMap[*definition.Name] = definition
 	}
 
+	for _, def := range containerDefinitionMap {
+		if def.LogConfiguration == nil || *def.LogConfiguration.LogDriver != awslogsDriver {
+			return fmt.Errorf("Container '%s' is not configured to use 'awslogs' log driver", *def.Name)
+		}
+	}
+
 	runTaskInput := &ecs.RunTaskInput{
 		TaskDefinition: aws.String(r.TaskDefinitionID),
 		Cluster:        aws.String(r.Cluster),
