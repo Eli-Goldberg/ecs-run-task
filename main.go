@@ -89,6 +89,10 @@ func main() {
 			Name:  "deregister",
 			Usage: "Deregister task definition once done",
 		},
+		cli.Int64Flag{
+			Name:  "timeout",
+			Usage: "timeout in seconds (default is 3600)",
+		},
 	}
 
 	app.Action = func(ctx *cli.Context) error {
@@ -110,6 +114,11 @@ func main() {
 		r.Environment = ctx.StringSlice("env")
 		r.Count = ctx.Int64("count")
 		r.Deregister = ctx.Bool("deregister")
+		r.TimeoutSeconds = ctx.Int64("timeout")
+
+		if r.TimeoutSeconds == 0 {
+			r.TimeoutSeconds = 3600
+		}
 
 		if r.TaskDefinitionFile != "" {
 			if _, err := os.Stat(ctx.String("file")); err != nil {

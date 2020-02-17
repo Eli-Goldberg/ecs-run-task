@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/aws/aws-sdk-go/service/ecs"
@@ -41,6 +43,7 @@ type Runner struct {
 	Environment        []string
 	Count              int64
 	Deregister         bool
+	TimeoutSeconds     int64
 }
 
 const (
@@ -55,10 +58,12 @@ const (
 
 // New creates a new instance of a runner
 func New() *Runner {
-	return &Runner{
+	r := &Runner{
 		Region: os.Getenv(awsRegion),
 		Config: aws.NewConfig(),
 	}
+
+	return r
 }
 
 // Run runs the runner
@@ -233,10 +238,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		taskARNs = append(taskARNs, task.TaskArn)
 	}
 
-	err = svc.WaitUntilTasksStopped(&ecs.DescribeTasksInput{
-		Cluster: aws.String(r.Cluster),
-		Tasks:   taskARNs,
-	})
+	err = svc.WaitUntilTasksStoppedWithContext(
+		ctx,
+		&ecs.DescribeTasksInput{
+			Cluster: aws.String(r.Cluster),
+			Tasks:   taskARNs,
+		},
+		request.WithWaiterMaxAttempts(1),
+		request.WithWaiterDelay(func(attempt int) time.Duration {
+			return time.Second * 1
+		}),
+	)
 	if err != nil {
 		return err
 	}
@@ -435,12 +447,21 @@ func (r *Runner) RunExistingTaskDefinition(ctx context.Context) error {
 		taskARNs = append(taskARNs, task.TaskArn)
 	}
 
-	err = svc.WaitUntilTasksStopped(&ecs.DescribeTasksInput{
-		Cluster: aws.String(r.Cluster),
-		Tasks:   taskARNs,
-	})
-	if err != nil {
-		return err
+	for {
+		werr := svc.WaitUntilTasksStopped(
+			&ecs.DescribeTasksInput{
+				Cluster: aws.String(r.Cluster),
+				Tasks:   taskARNs,
+			},
+		)
+		if werr == nil {
+			break
+		}
+		if !isAwsTimeOutError(werr) {
+			return werr
+		}
+
+		log.Printf("Waiting again for tasks to stop...")
 	}
 
 	log.Printf("All tasks have stopped")
@@ -491,6 +512,15 @@ func (r *Runner) RunExistingTaskDefinition(ctx context.Context) error {
 	}
 
 	return err
+}
+
+func isAwsTimeOutError(err error) bool {
+	if aerr, ok := err.(awserr.Error); ok {
+		if aerr.Code() == "ResourceNotReady" {
+			return true
+		}
+	}
+	return false
 }
 
 func logStreamName(logStreamPrefix string, container *ecs.Container, task *ecs.Task) string {
